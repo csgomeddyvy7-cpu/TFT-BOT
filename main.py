@@ -27,11 +27,11 @@ def health_check():
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)  # Disable default help
 
 # Configuration from environment variables
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-RIOT_API_KEY = os.getenv('RIOT_API_KEY')  # RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+RIOT_API_KEY = os.getenv('RIOT_API_KEY')
 DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', '0'))
 
 # File paths
@@ -47,9 +47,9 @@ logger = logging.getLogger(__name__)
 
 # Riot API configuration for Vietnam server (VNG)
 RIOT_REGIONS = {
-    'account': 'https://asia.api.riotgames.com',  # For Riot ID to PUUID
-    'tft': 'https://vn2.api.riotgames.com',       # For TFT data (Vietnam server)
-    'match': 'https://sea.api.riotgames.com'      # For match data (SEA region)
+    'account': 'https://asia.api.riotgames.com',
+    'tft': 'https://vn2.api.riotgames.com',
+    'match': 'https://sea.api.riotgames.com'
 }
 
 class RiotAPI:
@@ -76,7 +76,7 @@ class RiotAPI:
             session = await self.get_session()
             url = f"{RIOT_REGIONS['account']}/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
             
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get('puuid')
@@ -86,6 +86,9 @@ class RiotAPI:
                 else:
                     logger.error(f"API Error getting PUUID: {response.status}")
                     return None
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting PUUID for {game_name}#{tag_line}")
+            return None
         except Exception as e:
             logger.error(f"Error getting PUUID: {str(e)}")
             return None
@@ -96,12 +99,15 @@ class RiotAPI:
             session = await self.get_session()
             url = f"{RIOT_REGIONS['tft']}/tft/summoner/v1/summoners/by-puuid/{puuid}"
             
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     logger.error(f"API Error getting summoner: {response.status}")
                     return None
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting summoner for PUUID: {puuid}")
+            return None
         except Exception as e:
             logger.error(f"Error getting summoner: {str(e)}")
             return None
@@ -112,10 +118,9 @@ class RiotAPI:
             session = await self.get_session()
             url = f"{RIOT_REGIONS['tft']}/tft/league/v1/entries/by-summoner/{summoner_id}"
             
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     ranks = await response.json()
-                    # Find TFT ranked queue
                     for rank in ranks:
                         if rank.get('queueType') == 'RANKED_TFT':
                             return rank
@@ -123,6 +128,9 @@ class RiotAPI:
                 else:
                     logger.error(f"API Error getting rank: {response.status}")
                     return {}
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting rank for summoner: {summoner_id}")
+            return {}
         except Exception as e:
             logger.error(f"Error getting rank: {str(e)}")
             return {}
@@ -134,12 +142,15 @@ class RiotAPI:
             url = f"{RIOT_REGIONS['match']}/tft/match/v1/matches/by-puuid/{puuid}/ids"
             params = {'count': count}
             
-            async with session.get(url, params=params) as response:
+            async with session.get(url, params=params, timeout=10) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     logger.error(f"API Error getting match history: {response.status}")
                     return []
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting match history for PUUID: {puuid}")
+            return []
         except Exception as e:
             logger.error(f"Error getting match history: {str(e)}")
             return []
@@ -150,63 +161,17 @@ class RiotAPI:
             session = await self.get_session()
             url = f"{RIOT_REGIONS['match']}/tft/match/v1/matches/{match_id}"
             
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     logger.error(f"API Error getting match details: {response.status}")
                     return None
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting match details: {match_id}")
+            return None
         except Exception as e:
             logger.error(f"Error getting match details: {str(e)}")
-            return None
-    
-    async def get_player_profile(self, game_name: str, tag_line: str):
-        """Get complete player profile for verification"""
-        try:
-            # Get PUUID
-            puuid = await self.get_puuid_by_riot_id(game_name, tag_line)
-            if not puuid:
-                return None
-            
-            # Get summoner info
-            summoner = await self.get_summoner_by_puuid(puuid)
-            if not summoner:
-                return None
-            
-            # Get rank info
-            rank_info = await self.get_tft_rank(summoner.get('id', ''))
-            
-            # Get last match
-            matches = await self.get_match_history(puuid, 1)
-            last_match = None
-            if matches:
-                match_data = await self.get_match_details(matches[0])
-                if match_data:
-                    # Find player in participants
-                    for participant in match_data.get('info', {}).get('participants', []):
-                        if participant.get('puuid') == puuid:
-                            last_match = {
-                                'placement': participant.get('placement'),
-                                'game_datetime': match_data.get('info', {}).get('game_datetime'),
-                                'match_id': matches[0]
-                            }
-                            break
-            
-            return {
-                'puuid': puuid,
-                'game_name': game_name,
-                'tag_line': tag_line,
-                'summoner_id': summoner.get('id'),
-                'summoner_name': summoner.get('name'),
-                'summoner_level': summoner.get('summonerLevel'),
-                'profile_icon_id': summoner.get('profileIconId'),
-                'rank_info': rank_info,
-                'last_match': last_match,
-                'verified_at': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting player profile: {str(e)}")
             return None
 
 class PlayerTracker:
@@ -214,39 +179,48 @@ class PlayerTracker:
         self.riot_api = riot_api
         self.tracked_players = {}
         self.pending_confirmations = {}
-        self.last_matches = {}  # Store last processed match ID for each player
+        self.last_matches = {}
         
     async def load_data(self):
         """Load tracked players and pending confirmations from files"""
         try:
-            async with aiofiles.open(TRACKED_PLAYERS_FILE, 'r') as f:
-                content = await f.read()
-                self.tracked_players = json.loads(content)
-                logger.info(f"Loaded {len(self.tracked_players)} tracked players")
-        except FileNotFoundError:
+            if os.path.exists(TRACKED_PLAYERS_FILE):
+                async with aiofiles.open(TRACKED_PLAYERS_FILE, 'r') as f:
+                    content = await f.read()
+                    if content.strip():
+                        self.tracked_players = json.loads(content)
+                        logger.info(f"Loaded {len(self.tracked_players)} tracked players")
+                    else:
+                        self.tracked_players = {}
+        except Exception as e:
             self.tracked_players = {}
-            logger.info("No tracked players file found, starting fresh")
-        except json.JSONDecodeError:
-            self.tracked_players = {}
-            logger.warning("Tracked players file corrupted, starting fresh")
+            logger.warning(f"Error loading tracked players: {str(e)}")
         
         try:
-            async with aiofiles.open(PENDING_CONFIRMATIONS_FILE, 'r') as f:
-                content = await f.read()
-                self.pending_confirmations = json.loads(content)
-        except (FileNotFoundError, json.JSONDecodeError):
+            if os.path.exists(PENDING_CONFIRMATIONS_FILE):
+                async with aiofiles.open(PENDING_CONFIRMATIONS_FILE, 'r') as f:
+                    content = await f.read()
+                    if content.strip():
+                        self.pending_confirmations = json.loads(content)
+                    else:
+                        self.pending_confirmations = {}
+        except Exception as e:
             self.pending_confirmations = {}
+            logger.warning(f"Error loading pending confirmations: {str(e)}")
     
     async def save_data(self):
         """Save tracked players and pending confirmations to files"""
         try:
             async with aiofiles.open(TRACKED_PLAYERS_FILE, 'w') as f:
-                await f.write(json.dumps(self.tracked_players, indent=2, default=str))
-            
-            async with aiofiles.open(PENDING_CONFIRMATIONS_FILE, 'w') as f:
-                await f.write(json.dumps(self.pending_confirmations, indent=2, default=str))
+                await f.write(json.dumps(self.tracked_players, indent=2))
         except Exception as e:
-            logger.error(f"Error saving data: {str(e)}")
+            logger.error(f"Error saving tracked players: {str(e)}")
+        
+        try:
+            async with aiofiles.open(PENDING_CONFIRMATIONS_FILE, 'w') as f:
+                await f.write(json.dumps(self.pending_confirmations, indent=2))
+        except Exception as e:
+            logger.error(f"Error saving pending confirmations: {str(e)}")
     
     async def add_pending_confirmation(self, user_id: int, player_data: dict):
         """Add player to pending confirmations"""
@@ -269,7 +243,6 @@ class PlayerTracker:
         if pending['user_id'] != user_id:
             return False
         
-        # Move from pending to tracked
         player_data = pending['player_data']
         player_key = player_data['puuid']
         
@@ -281,7 +254,6 @@ class PlayerTracker:
             'last_rank': player_data.get('rank_info', {})
         }
         
-        # Remove from pending
         del self.pending_confirmations[key]
         
         await self.save_data()
@@ -297,114 +269,6 @@ class PlayerTracker:
             logger.info(f"Stopped tracking {player_name}")
             return True
         return False
-    
-    async def check_player_update(self, puuid: str, player_data: dict):
-        """Check for new matches and rank updates"""
-        try:
-            # Get recent matches
-            matches = await self.riot_api.get_match_history(puuid, 5)
-            if not matches:
-                return None
-            
-            # Get last tracked match
-            tracked_player = self.tracked_players.get(puuid, {})
-            last_match_id = tracked_player.get('last_match_id')
-            
-            # Check if there's a new match
-            new_matches = []
-            if last_match_id:
-                for match_id in matches:
-                    if match_id == last_match_id:
-                        break
-                    new_matches.append(match_id)
-            else:
-                # First time checking, only consider the latest match
-                new_matches = [matches[0]] if matches else []
-            
-            # Get rank info
-            current_rank = player_data.get('rank_info', {})
-            last_rank = tracked_player.get('last_rank', {})
-            
-            updates = {
-                'new_matches': [],
-                'rank_changed': False,
-                'rank_up': False,
-                'rank_down': False
-            }
-            
-            # Process new matches
-            for match_id in new_matches[:3]:  # Limit to 3 new matches per check
-                match_data = await self.riot_api.get_match_details(match_id)
-                if match_data:
-                    # Find player in match
-                    for participant in match_data.get('info', {}).get('participants', []):
-                        if participant.get('puuid') == puuid:
-                            match_info = {
-                                'match_id': match_id,
-                                'placement': participant.get('placement'),
-                                'game_datetime': match_data.get('info', {}).get('game_datetime'),
-                                'level': participant.get('level'),
-                                'companion': participant.get('companion', {}).get('item_ID'),
-                                'traits': participant.get('traits', []),
-                                'units': participant.get('units', [])
-                            }
-                            updates['new_matches'].append(match_info)
-                            break
-            
-            # Check rank changes
-            if current_rank and last_rank:
-                current_tier = current_rank.get('tier', 'UNRANKED')
-                current_rank_num = current_rank.get('rank', 'IV')
-                current_lp = current_rank.get('leaguePoints', 0)
-                
-                last_tier = last_rank.get('tier', 'UNRANKED')
-                last_rank_num = last_rank.get('rank', 'IV')
-                last_lp = last_rank.get('leaguePoints', 0)
-                
-                # Simple rank comparison
-                tier_order = ['IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER']
-                rank_order = ['IV', 'III', 'II', 'I']
-                
-                if current_tier != last_tier:
-                    current_idx = tier_order.index(current_tier) if current_tier in tier_order else -1
-                    last_idx = tier_order.index(last_tier) if last_tier in tier_order else -1
-                    
-                    if current_idx > last_idx:
-                        updates['rank_changed'] = True
-                        updates['rank_up'] = True
-                    elif current_idx < last_idx:
-                        updates['rank_changed'] = True
-                        updates['rank_down'] = True
-                elif current_rank_num != last_rank_num:
-                    current_rank_idx = rank_order.index(current_rank_num) if current_rank_num in rank_order else -1
-                    last_rank_idx = rank_order.index(last_rank_num) if last_rank_num in rank_order else -1
-                    
-                    if current_rank_idx > last_rank_idx:
-                        updates['rank_changed'] = True
-                        updates['rank_up'] = True
-                    elif current_rank_idx < last_rank_idx:
-                        updates['rank_changed'] = True
-                        updates['rank_down'] = True
-                elif abs(current_lp - last_lp) > 50:  # Significant LP change
-                    updates['rank_changed'] = True
-                    updates['rank_up'] = current_lp > last_lp
-                    updates['rank_down'] = current_lp < last_lp
-            
-            # Update last match and rank
-            if updates['new_matches']:
-                self.tracked_players[puuid]['last_match_id'] = updates['new_matches'][0]['match_id']
-            
-            if current_rank:
-                self.tracked_players[puuid]['last_rank'] = current_rank
-            
-            self.tracked_players[puuid]['last_checked'] = datetime.now().isoformat()
-            await self.save_data()
-            
-            return updates if updates['new_matches'] or updates['rank_changed'] else None
-            
-        except Exception as e:
-            logger.error(f"Error checking player update: {str(e)}")
-            return None
     
     def get_tracked_players_list(self):
         """Get list of tracked players"""
@@ -427,15 +291,12 @@ async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
     logger.info(f'Channel ID: {DISCORD_CHANNEL_ID}')
     
-    # Load tracked players
     await tracker.load_data()
     logger.info(f"Loaded {len(tracker.tracked_players)} tracked players")
     
-    # Start the background task
     if not check_players_task.is_running():
         check_players_task.start()
     
-    # Start APScheduler for periodic checks
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         check_players_task,
@@ -445,7 +306,6 @@ async def on_ready():
     )
     scheduler.start()
     
-    # Change bot status
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
@@ -472,48 +332,170 @@ async def check_players_task():
     
     for puuid, player_data in list(tracker.tracked_players.items()):
         try:
-            # Get current player profile
-            current_profile = await riot_api.get_player_profile(
-                player_data['game_name'],
-                player_data['tag_line']
-            )
-            
-            if not current_profile:
-                logger.warning(f"Could not get profile for {player_data['game_name']}#{player_data['tag_line']}")
+            # Get current player data
+            current_data = await get_player_current_data(player_data['game_name'], player_data['tag_line'])
+            if not current_data:
                 continue
             
-            # Check for updates
-            updates = await tracker.check_player_update(puuid, current_profile)
+            # Check for new matches
+            new_matches = await check_new_matches(puuid, player_data, current_data)
             
-            if updates:
-                await send_update_notification(channel, player_data, current_profile, updates)
+            # Check for rank changes
+            rank_update = await check_rank_update(player_data, current_data)
             
-            # Rate limiting delay
-            await asyncio.sleep(1)
+            # Send notifications if needed
+            if new_matches or rank_update:
+                await send_player_update(channel, player_data, current_data, new_matches, rank_update)
+                # Update stored data
+                if new_matches:
+                    tracker.tracked_players[puuid]['last_match_id'] = new_matches[0]['match_id']
+                if current_data.get('rank_info'):
+                    tracker.tracked_players[puuid]['last_rank'] = current_data['rank_info']
+                tracker.tracked_players[puuid]['last_checked'] = datetime.now().isoformat()
+                await tracker.save_data()
+            
+            await asyncio.sleep(1)  # Rate limiting
             
         except Exception as e:
             logger.error(f"Error checking player {player_data.get('game_name', 'Unknown')}: {str(e)}")
     
     logger.info("Player check completed")
 
-async def send_update_notification(channel, player_data, current_profile, updates):
-    """Send notification about player updates"""
+async def get_player_current_data(game_name: str, tag_line: str):
+    """Get current player data from Riot API"""
+    try:
+        # Get PUUID
+        puuid = await riot_api.get_puuid_by_riot_id(game_name, tag_line)
+        if not puuid:
+            return None
+        
+        # Get summoner info
+        summoner = await riot_api.get_summoner_by_puuid(puuid)
+        if not summoner:
+            return None
+        
+        # Get rank info
+        rank_info = await riot_api.get_tft_rank(summoner.get('id', ''))
+        
+        # Get last match
+        matches = await riot_api.get_match_history(puuid, 1)
+        last_match = None
+        if matches:
+            match_data = await riot_api.get_match_details(matches[0])
+            if match_data:
+                for participant in match_data.get('info', {}).get('participants', []):
+                    if participant.get('puuid') == puuid:
+                        last_match = {
+                            'match_id': matches[0],
+                            'placement': participant.get('placement'),
+                            'game_datetime': match_data.get('info', {}).get('game_datetime'),
+                            'level': participant.get('level'),
+                            'traits': participant.get('traits', []),
+                            'units': participant.get('units', [])
+                        }
+                        break
+        
+        return {
+            'puuid': puuid,
+            'game_name': game_name,
+            'tag_line': tag_line,
+            'summoner': summoner,
+            'rank_info': rank_info,
+            'last_match': last_match
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting player data: {str(e)}")
+        return None
+
+async def check_new_matches(puuid: str, stored_data: dict, current_data: dict):
+    """Check for new matches"""
+    try:
+        last_match_id = stored_data.get('last_match_id')
+        current_match = current_data.get('last_match')
+        
+        if not current_match:
+            return []
+        
+        # If we don't have a last match ID, this is the first check
+        if not last_match_id:
+            return [current_match]
+        
+        # Check if the current match is different from the last one
+        if current_match['match_id'] != last_match_id:
+            # Get more matches to make sure we don't miss any
+            matches = await riot_api.get_match_history(puuid, 5)
+            new_matches = []
+            
+            for match_id in matches:
+                if match_id == last_match_id:
+                    break
+                
+                match_data = await riot_api.get_match_details(match_id)
+                if match_data:
+                    for participant in match_data.get('info', {}).get('participants', []):
+                        if participant.get('puuid') == puuid:
+                            new_matches.append({
+                                'match_id': match_id,
+                                'placement': participant.get('placement'),
+                                'game_datetime': match_data.get('info', {}).get('game_datetime'),
+                                'level': participant.get('level'),
+                                'traits': participant.get('traits', []),
+                                'units': participant.get('units', [])
+                            })
+                            break
+            
+            return new_matches
+        
+        return []
+        
+    except Exception as e:
+        logger.error(f"Error checking new matches: {str(e)}")
+        return []
+
+async def check_rank_update(stored_data: dict, current_data: dict):
+    """Check for rank updates"""
+    try:
+        old_rank = stored_data.get('last_rank', {})
+        new_rank = current_data.get('rank_info', {})
+        
+        if not old_rank or not new_rank:
+            return None
+        
+        old_tier = old_rank.get('tier', '')
+        old_division = old_rank.get('rank', '')
+        old_lp = old_rank.get('leaguePoints', 0)
+        
+        new_tier = new_rank.get('tier', '')
+        new_division = new_rank.get('rank', '')
+        new_lp = new_rank.get('leaguePoints', 0)
+        
+        if old_tier != new_tier or old_division != new_division or abs(new_lp - old_lp) >= 20:
+            return {
+                'old_rank': old_rank,
+                'new_rank': new_rank,
+                'is_up': False  # Will be determined in send_player_update
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error checking rank update: {str(e)}")
+        return None
+
+async def send_player_update(channel, player_data: dict, current_data: dict, new_matches: list, rank_update: dict):
+    """Send update notifications to Discord"""
     try:
         player_name = f"{player_data['game_name']}#{player_data['tag_line']}"
-        summoner_name = current_profile.get('summoner_name', player_name)
+        summoner_name = current_data['summoner'].get('name', player_name)
         
-        # Create embed for new matches
-        for match in updates['new_matches']:
+        # Send match notifications
+        for match in new_matches[:2]:  # Limit to 2 matches per notification
             placement = match['placement']
             game_time = datetime.fromtimestamp(match['game_datetime'] / 1000)
             
-            # Determine embed color based on placement
-            if placement <= 4:
-                color = discord.Color.green()
-                emoji = "🎯"
-            else:
-                color = discord.Color.orange()
-                emoji = "⚔️"
+            color = discord.Color.green() if placement <= 4 else discord.Color.orange()
+            emoji = "🎯" if placement <= 4 else "⚔️"
             
             embed = discord.Embed(
                 title=f"{emoji} {summoner_name} vừa hoàn thành trận đấu TFT!",
@@ -522,28 +504,20 @@ async def send_update_notification(channel, player_data, current_profile, update
                 timestamp=game_time
             )
             
-            embed.set_thumbnail(url=f"http://ddragon.leagueoflegends.com/cdn/13.24.1/img/profileicon/{current_profile.get('profile_icon_id', 0)}.png")
-            
             # Add rank info
-            rank_info = current_profile.get('rank_info', {})
+            rank_info = current_data.get('rank_info', {})
             if rank_info:
                 tier = rank_info.get('tier', 'UNRANKED')
                 division = rank_info.get('rank', '')
                 lp = rank_info.get('leaguePoints', 0)
-                wins = rank_info.get('wins', 0)
-                losses = rank_info.get('losses', 0)
                 
                 rank_text = f"{tier.title()} {division}" if division else tier.title()
                 embed.add_field(name="Rank hiện tại", value=f"{rank_text} ({lp} LP)", inline=True)
-                
-                if wins + losses > 0:
-                    winrate = (wins / (wins + losses)) * 100
-                    embed.add_field(name="Tỉ lệ thắng", value=f"{winrate:.1f}% ({wins}W/{losses}L)", inline=True)
             
-            # Add match details
-            embed.add_field(name="Thời gian", value=f"<t:{int(game_time.timestamp())}:R>", inline=False)
+            # Add match time
+            embed.add_field(name="Thời gian", value=f"<t:{int(game_time.timestamp())}:R>", inline=True)
             
-            # Add traits (top 3)
+            # Add composition info if available
             traits = match.get('traits', [])
             active_traits = [t for t in traits if t.get('tier_current', 0) > 0]
             active_traits.sort(key=lambda x: (-x.get('tier_current', 0), -x.get('num_units', 0)))
@@ -551,27 +525,17 @@ async def send_update_notification(channel, player_data, current_profile, update
             if active_traits:
                 trait_text = ""
                 for trait in active_traits[:3]:
-                    name = trait.get('name', 'Unknown').replace('Set6_', '').replace('Set7_', '').title()
+                    name = trait.get('name', 'Unknown').replace('Set', '').replace('_', ' ').title()
                     tier = trait.get('tier_current', 0)
-                    trait_text += f"{name} (Tier {tier})\n"
-                embed.add_field(name="Đội hình chính", value=trait_text, inline=True)
-            
-            # Add units (top 5)
-            units = match.get('units', [])
-            if units:
-                unit_text = ""
-                for unit in units[:5]:
-                    name = unit.get('character_id', '').replace('TFT7_', '').replace('TFT6_', '').title()
-                    tier = unit.get('tier', 1)
-                    unit_text += f"{name} ⭐{tier}\n"
-                embed.add_field(name="Tướng chính", value=unit_text, inline=True)
+                    trait_text += f"• {name} (Cấp {tier})\n"
+                embed.add_field(name="Đội hình chính", value=trait_text, inline=False)
             
             await channel.send(embed=embed)
         
         # Send rank update notification
-        if updates['rank_changed']:
-            old_rank = player_data.get('last_rank', {})
-            new_rank = current_profile.get('rank_info', {})
+        if rank_update:
+            old_rank = rank_update['old_rank']
+            new_rank = rank_update['new_rank']
             
             old_tier = old_rank.get('tier', 'UNRANKED')
             old_division = old_rank.get('rank', '')
@@ -584,7 +548,22 @@ async def send_update_notification(channel, player_data, current_profile, update
             old_rank_text = f"{old_tier.title()} {old_division}" if old_division else old_tier.title()
             new_rank_text = f"{new_tier.title()} {new_division}" if new_division else new_tier.title()
             
-            if updates['rank_up']:
+            # Determine if rank went up or down
+            tier_order = ['IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER']
+            division_order = ['IV', 'III', 'II', 'I']
+            
+            is_up = False
+            if old_tier in tier_order and new_tier in tier_order:
+                if tier_order.index(new_tier) > tier_order.index(old_tier):
+                    is_up = True
+                elif tier_order.index(new_tier) == tier_order.index(old_tier):
+                    if old_division in division_order and new_division in division_order:
+                        if division_order.index(new_division) > division_order.index(old_division):
+                            is_up = True
+                        elif division_order.index(new_division) == division_order.index(old_division):
+                            is_up = new_lp > old_lp
+            
+            if is_up:
                 embed = discord.Embed(
                     title=f"🎉 CHÚC MỪNG {summoner_name}! 🎉",
                     description=f"**ĐÃ LÊN HẠNG!**",
@@ -592,7 +571,6 @@ async def send_update_notification(channel, player_data, current_profile, update
                 )
                 embed.add_field(name="Hạng cũ", value=f"{old_rank_text} ({old_lp} LP)", inline=True)
                 embed.add_field(name="Hạng mới", value=f"{new_rank_text} ({new_lp} LP)", inline=True)
-                embed.set_thumbnail(url="https://emojipedia-us.s3.dualstack.us-west-1.amazonaws.com/thumbs/120/twitter/322/party-popper_1f389.png")
             else:
                 embed = discord.Embed(
                     title=f"💪 {summoner_name} ĐỪNG NẢN! 💪",
@@ -601,17 +579,15 @@ async def send_update_notification(channel, player_data, current_profile, update
                 )
                 embed.add_field(name="Hạng cũ", value=f"{old_rank_text} ({old_lp} LP)", inline=True)
                 embed.add_field(name="Hạng hiện tại", value=f"{new_rank_text} ({new_lp} LP)", inline=True)
-                embed.set_thumbnail(url="https://emojipedia-us.s3.dualstack.us-west-1.amazonaws.com/thumbs/120/twitter/322/flexed-biceps_1f4aa.png")
             
             await channel.send(embed=embed)
             
     except Exception as e:
-        logger.error(f"Error sending notification: {str(e)}")
+        logger.error(f"Error sending player update: {str(e)}")
 
 @bot.command(name='tracker')
 async def tracker_command(ctx, *, riot_id: str):
     """Xác thực và hiển thị thông tin người chơi"""
-    # Parse Riot ID (format: name#tag)
     if '#' not in riot_id:
         await ctx.send("❌ **Lỗi:** Vui lòng nhập đúng định dạng `Tên#Thẻ` (VD: `PlayerName#VN1`)")
         return
@@ -624,7 +600,7 @@ async def tracker_command(ctx, *, riot_id: str):
             await ctx.send(f"❌ **{riot_id}** đã được theo dõi rồi!")
             return
     
-    # Check if pending confirmation exists
+    # Check if pending
     pending = tracker.get_pending_confirmation(ctx.author.id, riot_id)
     if pending:
         await ctx.send(f"❌ **{riot_id}** đang chờ xác nhận! Sử dụng `!confirm {riot_id}` để xác nhận.")
@@ -632,10 +608,10 @@ async def tracker_command(ctx, *, riot_id: str):
     
     await ctx.send(f"🔍 **Đang tìm kiếm thông tin cho {riot_id}...**")
     
-    # Get player profile
-    player_profile = await riot_api.get_player_profile(game_name, tag_line)
+    # Get player data
+    player_data = await get_player_current_data(game_name, tag_line)
     
-    if not player_profile:
+    if not player_data:
         await ctx.send(f"❌ **Không tìm thấy người chơi {riot_id}**\nVui lòng kiểm tra lại tên và thẻ (tag).")
         return
     
@@ -645,18 +621,17 @@ async def tracker_command(ctx, *, riot_id: str):
         color=discord.Color.green()
     )
     
-    embed.set_thumbnail(url=f"http://ddragon.leagueoflegends.com/cdn/13.24.1/img/profileicon/{player_profile.get('profile_icon_id', 0)}.png")
-    
     # Add summoner info
+    summoner = player_data['summoner']
     embed.add_field(
         name="Thông tin Summoner",
-        value=f"**Tên:** {player_profile.get('summoner_name', 'N/A')}\n"
-              f"**Cấp độ:** {player_profile.get('summoner_level', 0)}",
+        value=f"**Tên:** {summoner.get('name', 'N/A')}\n"
+              f"**Cấp độ:** {summoner.get('summonerLevel', 0)}",
         inline=False
     )
     
     # Add rank info
-    rank_info = player_profile.get('rank_info', {})
+    rank_info = player_data.get('rank_info', {})
     if rank_info:
         tier = rank_info.get('tier', 'UNRANKED')
         division = rank_info.get('rank', '')
@@ -688,7 +663,7 @@ async def tracker_command(ctx, *, riot_id: str):
         )
     
     # Add last match info
-    last_match = player_profile.get('last_match')
+    last_match = player_data.get('last_match')
     if last_match:
         placement = last_match.get('placement')
         game_time = datetime.fromtimestamp(last_match.get('game_datetime', 0) / 1000)
@@ -700,13 +675,11 @@ async def tracker_command(ctx, *, riot_id: str):
             inline=False
         )
     
-    embed.set_footer(text=f"Yêu cầu bởi {ctx.author.name}")
-    
     await ctx.send(embed=embed)
     await ctx.send(f"📝 **Xác nhận theo dõi {riot_id}?**\nGõ `!confirm {riot_id}` để xác nhận.")
     
-    # Add to pending confirmations
-    await tracker.add_pending_confirmation(ctx.author.id, player_profile)
+    # Add to pending
+    await tracker.add_pending_confirmation(ctx.author.id, player_data)
 
 @bot.command(name='confirm')
 async def confirm_command(ctx, *, riot_id: str):
@@ -716,7 +689,6 @@ async def confirm_command(ctx, *, riot_id: str):
     if success:
         await ctx.send(f"✅ **Đã bắt đầu theo dõi {riot_id}!**\nBot sẽ thông báo khi có trận đấu mới.")
         
-        # Update bot status
         tracked_count = len(tracker.tracked_players)
         await bot.change_presence(
             activity=discord.Activity(
@@ -730,7 +702,6 @@ async def confirm_command(ctx, *, riot_id: str):
 @bot.command(name='unfollow')
 async def unfollow_command(ctx, *, riot_id: str):
     """Dừng theo dõi người chơi"""
-    # Find player by Riot ID
     target_puuid = None
     for puuid, player_data in tracker.tracked_players.items():
         player_riot_id = f"{player_data['game_name']}#{player_data['tag_line']}"
@@ -742,13 +713,11 @@ async def unfollow_command(ctx, *, riot_id: str):
         await ctx.send(f"❌ **Không tìm thấy {riot_id} trong danh sách theo dõi**")
         return
     
-    # Remove from tracking
     success = await tracker.remove_tracking(target_puuid)
     
     if success:
         await ctx.send(f"✅ **Đã dừng theo dõi {riot_id}**")
         
-        # Update bot status
         tracked_count = len(tracker.tracked_players)
         await bot.change_presence(
             activity=discord.Activity(
@@ -795,8 +764,6 @@ async def list_command(ctx):
             inline=False
         )
     
-    embed.set_footer(text=f"Sử dụng !unfollow Tên#Thẻ để dừng theo dõi")
-    
     await ctx.send(embed=embed)
 
 @bot.command(name='forcecheck')
@@ -816,16 +783,13 @@ async def status_command(ctx):
         timestamp=datetime.now()
     )
     
-    # Bot info
     embed.add_field(
         name="Bot Info",
         value=f"**Ping:** {round(bot.latency * 1000)}ms\n"
-              f"**Uptime:** <t:{int(bot.start_time.timestamp())}:R>\n"
               f"**Server:** {len(bot.guilds)} server(s)",
         inline=True
     )
     
-    # Tracking info
     players_count = len(tracker.tracked_players)
     pending_count = len(tracker.pending_confirmations)
     
@@ -837,7 +801,7 @@ async def status_command(ctx):
         inline=True
     )
     
-    # Last check
+    # Find last check time
     last_check = None
     for player in tracker.tracked_players.values():
         if player.get('last_checked'):
@@ -849,17 +813,14 @@ async def status_command(ctx):
         embed.add_field(
             name="Hoạt động",
             value=f"**Lần check cuối:** <t:{int(last_check.timestamp())}:R>\n"
-                  f"**Check mỗi:** 3 phút\n"
-                  f"**Task đang chạy:** {check_players_task.is_running()}",
+                  f"**Check mỗi:** 3 phút",
             inline=True
         )
     
-    embed.set_footer(text=f"Yêu cầu bởi {ctx.author.name}")
-    
     await ctx.send(embed=embed)
 
-@bot.command(name='help')
-async def help_command(ctx):
+@bot.command(name='bothelp')
+async def bothelp_command(ctx):
     """Hiển thị hướng dẫn sử dụng"""
     embed = discord.Embed(
         title="📚 Hướng dẫn sử dụng TFT Tracker Bot",
@@ -874,7 +835,7 @@ async def help_command(ctx):
         ("!list", "Xem danh sách người chơi đang theo dõi"),
         ("!status", "Xem trạng thái bot"),
         ("!forcecheck", "Kiểm tra ngay lập tức (Admin only)"),
-        ("!help", "Hiển thị hướng dẫn này")
+        ("!bothelp", "Hiển thị hướng dẫn này")
     ]
     
     for cmd, desc in commands_list:
@@ -889,15 +850,13 @@ async def help_command(ctx):
         inline=False
     )
     
-    embed.set_footer(text="Bot được tạo bởi TFT Vietnam Community")
-    
     await ctx.send(embed=embed)
 
 @bot.event
 async def on_command_error(ctx, error):
     """Handle command errors"""
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"❌ **Lệnh không tồn tại!** Gõ `!help` để xem các lệnh có sẵn.")
+        await ctx.send(f"❌ **Lệnh không tồn tại!** Gõ `!bothelp` để xem các lệnh có sẵn.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"❌ **Thiếu tham số!** Vui lòng kiểm tra lại cú pháp lệnh.")
     elif isinstance(error, commands.BadArgument):
@@ -906,26 +865,22 @@ async def on_command_error(ctx, error):
         await ctx.send(f"❌ **Bạn không có quyền sử dụng lệnh này!**")
     else:
         logger.error(f"Command error: {str(error)}")
-        await ctx.send(f"❌ **Đã xảy ra lỗi:** {str(error)[:100]}")
 
-# Initialize bot start time
-bot.start_time = datetime.now()
-
-async def run_flask():
-    """Run Flask in background"""
-    port = int(os.getenv('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-async def main():
-    """Main function"""
-    # Create required files if they don't exist
+# Initialize required files
+async def init_files():
+    """Initialize required files if they don't exist"""
     for file in [TRACKED_PLAYERS_FILE, PENDING_CONFIRMATIONS_FILE]:
         if not os.path.exists(file):
             async with aiofiles.open(file, 'w') as f:
                 await f.write('{}')
+
+def run_bot():
+    """Run the Discord bot"""
+    # Initialize files
+    asyncio.run(init_files())
     
-    # Start the bot
-    await bot.start(DISCORD_TOKEN)
+    # Run the bot
+    bot.run(DISCORD_TOKEN)
 
 if __name__ == "__main__":
     # Check required environment variables
@@ -948,7 +903,7 @@ if __name__ == "__main__":
     
     # Run the Discord bot
     try:
-        asyncio.run(main())
+        run_bot()
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
     finally:
