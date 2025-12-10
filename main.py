@@ -60,7 +60,7 @@ def get_puuid_by_riot_id(name, tag):
         return None
 
 def get_rank_info(puuid):
-    """Lấy thông tin Rank và Winrate từ PUUID"""
+    """Lấy thông tin Rank và Winrate từ PUUID (Đã fix lỗi Unknown)"""
     try:
         # 1. Từ PUUID lấy Summoner ID
         summoner = tft_watcher.summoner.by_puuid(REGION_TFT, puuid)
@@ -70,15 +70,22 @@ def get_rank_info(puuid):
         league_entries = tft_watcher.league.by_summoner(REGION_TFT, summoner_id)
         
         if not league_entries:
-            return "Unranked", 0, 0, 0 # Rank, Win, Lose, Winrate
+            return "Unranked", 0, 0, 0 
             
-        # Lấy entry đầu tiên (thường TFT chỉ có 1 entry rank xếp hạng)
-        entry = league_entries[0]
-        tier = entry['tier']
-        rank = entry['rank']
-        lp = entry['leaguePoints']
-        wins = entry['wins']
-        losses = entry['losses']
+        # --- FIX LỖI Ở ĐÂY ---
+        # Tìm đúng entry của chế độ RANK ĐƠN (RANKED_TFT)
+        # Bỏ qua Double Up (RANKED_TFT_DOUBLE_UP) hoặc Hyper Roll vì cấu trúc dữ liệu khác nhau
+        entry = next((e for e in league_entries if e['queueType'] == 'RANKED_TFT'), None)
+        
+        if not entry:
+            # Nếu có dữ liệu nhưng không phải Rank đơn (VD: Chỉ chơi Double Up)
+            return "Chưa chơi Rank Đơn", 0, 0, 0
+
+        tier = entry.get('tier', 'Unknown')
+        rank = entry.get('rank', '')
+        lp = entry.get('leaguePoints', 0)
+        wins = entry.get('wins', 0)
+        losses = entry.get('losses', 0)
         
         total_games = wins + losses
         winrate = round((wins / total_games) * 100, 1) if total_games > 0 else 0
@@ -87,8 +94,11 @@ def get_rank_info(puuid):
         return rank_str, wins, losses, winrate
         
     except ApiError as e:
-        print(f"Lỗi lấy Rank: {e}")
-        return "Unknown", 0, 0, 0
+        print(f"Lỗi API Riot: {e}") # Check log trên Render để biết lỗi gì (404, 403...)
+        return "Lỗi kết nối Riot", 0, 0, 0
+    except Exception as e:
+        print(f"Lỗi xử lý dữ liệu: {e}") # Check log xem lỗi code chỗ nào
+        return "Lỗi dữ liệu", 0, 0, 0
 
 # --- PHẦN 3: COMMANDS & EVENTS ---
 
