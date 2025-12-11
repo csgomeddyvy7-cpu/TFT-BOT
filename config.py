@@ -48,9 +48,6 @@ class Config:
             errors.append("DISCORD_TOKEN is required")
         
         if not cls.RIOT_API_KEY:
-            print("⚠️ RIOT_API_KEY không có, một số tính năng sẽ bị giới hạn")
-        
-        if not cls.GEMINI_API_KEY:
-            print("⚠️ GEMINI_API_KEY không có, phân tích AI sẽ không khả dụng")
+            errors.append("RIOT_API_KEY is required for TFT data")
         
         return errors
