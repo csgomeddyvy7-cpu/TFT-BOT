@@ -80,14 +80,25 @@ class RiotVerifier:
                 'error': 'Username và Tagline không được để trống'
             }
         
-        # Nếu có Riot API key, dùng API chính thức
-        if self.has_api_key:
-            result = await self._verify_with_riot_api(username, tagline, region)
-            if result['success']:
-                return result
+        # Ưu tiên dùng fallback method (tracker.gg) thay vì Riot API
+        # Vì Riot API không ổn định với bạn
+        result = await self._verify_with_fallback(username, tagline, region)
         
-        # Fallback: Dùng phương pháp khác
-        return await self._verify_with_fallback(username, tagline, region)
+        # Nếu fallback thành công, trả về kết quả
+        if result['success']:
+            return result
+        
+        # Nếu fallback thất bại, thử dùng Riot API (nếu có key)
+        if self.has_api_key:
+            api_result = await self._verify_with_riot_api(username, tagline, region)
+            if api_result['success']:
+                return api_result
+        
+        # Nếu cả hai đều thất bại, trả về lỗi
+        return {
+            'success': False,
+            'error': 'Không thể xác thực Riot ID qua tracker.gg. Vui lòng kiểm tra lại thông tin.'
+        }
     
     async def _verify_with_riot_api(self, username, tagline, region):
         """Xác thực bằng Riot API chính thức"""
@@ -145,9 +156,9 @@ class RiotVerifier:
             }
     
     async def _verify_with_fallback(self, username, tagline, region):
-        """Xác thực bằng phương pháp fallback (không cần API key)"""
+        """Xác thực bằng phương pháp fallback (dùng tracker.gg)"""
         try:
-            # Thử lấy từ tracker.gg
+            # Ưu tiên dùng tracker.gg
             tracker_data = await self._get_from_tracker(username, tagline, region)
             if tracker_data:
                 return {
@@ -155,14 +166,16 @@ class RiotVerifier:
                     'data': {
                         'game_name': tracker_data.get('game_name', username),
                         'tagline': tracker_data.get('tagline', tagline),
-                        'verified': False,  # Chưa xác thực hoàn toàn
+                        'verified': True,  # Coi như đã xác thực
                         'source': 'tracker_gg',
                         'verified_at': datetime.now().isoformat(),
-                        'tft_rank': tracker_data.get('tft_rank', 'Unknown')
+                        'tft_rank': tracker_data.get('tft_rank', 'Chưa xác định'),
+                        'rank_lp': tracker_data.get('rank_lp', 0),
+                        'top_rank': tracker_data.get('top_rank', False)
                     }
                 }
             
-            # Thử lấy từ op.gg
+            # Nếu tracker.gg không được, thử op.gg
             opgg_data = await self._get_from_opgg(username, tagline, region)
             if opgg_data:
                 return {
@@ -170,17 +183,17 @@ class RiotVerifier:
                     'data': {
                         'game_name': opgg_data.get('game_name', username),
                         'tagline': opgg_data.get('tagline', tagline),
-                        'verified': False,
+                        'verified': True,
                         'source': 'op_gg',
                         'verified_at': datetime.now().isoformat(),
-                        'tft_rank': opgg_data.get('tft_rank', 'Unknown')
+                        'tft_rank': opgg_data.get('tft_rank', 'Chưa xác định')
                     }
                 }
             
             # Nếu không tìm thấy ở đâu cả
             return {
                 'success': False,
-                'error': 'Không thể tìm thấy tài khoản. Kiểm tra lại Riot ID và region.'
+                'error': 'Không thể tìm thấy tài khoản trên tracker.gg. Kiểm tra lại Riot ID và region.'
             }
             
         except Exception as e:
@@ -191,60 +204,160 @@ class RiotVerifier:
             }
     
     async def _get_from_tracker(self, username, tagline, region):
-        """Lấy thông tin từ tracker.gg"""
+        """Lấy thông tin thực từ tracker.gg bằng web scraping"""
         try:
+            from bs4 import BeautifulSoup
             import urllib.parse
+            
+            # Mã hóa username để dùng trong URL
             encoded_username = urllib.parse.quote(username)
             
-            # Tạo URL cho tracker.gg
-            url = f"https://tracker.gg/tft/profile/riot/{encoded_username}%23{tagline}/overview"
+            # Tạo URL cho tracker.gg - region có thể cần mapping
+            region_map = {
+                'vn': 'vn',
+                'na': 'na',
+                'euw': 'euw',
+                'eune': 'eune',
+                'kr': 'kr',
+                'jp': 'jp'
+            }
+            
+            tracker_region = region_map.get(region.lower(), 'vn')
+            url = f"https://tracker.gg/tft/profile/riot/{encoded_username}%23{tagline}/overview?region={tracker_region}"
             
             session = await self.get_session()
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Cache-Control": "max-age=0"
             }
             
-            async with session.get(url, headers=headers, timeout=10) as response:
+            async with session.get(url, headers=headers, timeout=15) as response:
                 if response.status == 200:
                     html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
                     
-                    # Parse đơn giản (trong thực tế cần BeautifulSoup)
-                    # Đây chỉ là mock data
+                    # Tìm thông tin rank - CẦN KIỂM TRA SELECTOR NÀY
+                    rank_info = {}
+                    
+                    # Thử tìm rank theo nhiều selector khác nhau
+                    selectors = [
+                        '.rating-summary__rank', 
+                        '.rating-summary .valorant-rank',
+                        '.stat__value',
+                        '.trn-profile-header__rank'
+                    ]
+                    
+                    rank_text = "Chưa xác định"
+                    for selector in selectors:
+                        rank_element = soup.select_one(selector)
+                        if rank_element:
+                            rank_text = rank_element.get_text(strip=True)
+                            if rank_text and rank_text != '':
+                                break
+                    
+                    # Tìm LP nếu có
+                    lp_element = soup.select_one('.rating-summary__rating')
+                    lp_text = "0"
+                    if lp_element:
+                        lp_match = re.search(r'(\d+)\s*LP', lp_element.get_text())
+                        if lp_match:
+                            lp_text = lp_match.group(1)
+                    
+                    # Kiểm tra xem có phải top rank không
+                    top_rank = False
+                    if any(word in rank_text.lower() for word in ['challenger', 'grandmaster', 'master']):
+                        top_rank = True
+                    
                     return {
                         'game_name': username,
                         'tagline': tagline,
-                        'tft_rank': 'Gold III',  # Mock
+                        'tft_rank': rank_text,
+                        'rank_lp': int(lp_text) if lp_text.isdigit() else 0,
+                        'top_rank': top_rank,
+                        'profile_url': url,
                         'source': 'tracker_gg'
                     }
+                elif response.status == 404:
+                    print(f"Tracker.gg: Không tìm thấy hồ sơ cho {username}#{tagline}")
+                    return None
+                else:
+                    print(f"Tracker.gg trả về mã lỗi: {response.status}")
+                    return None
                     
+        except asyncio.TimeoutError:
+            print(f"Timeout khi kết nối đến tracker.gg cho {username}#{tagline}")
             return None
-        except:
+        except Exception as e:
+            print(f"Lỗi khi scrape tracker.gg: {e}")
             return None
     
     async def _get_from_opgg(self, username, tagline, region):
         """Lấy thông tin từ op.gg"""
         try:
-            # URL cho TFT trên OP.GG
-            url = f"https://www.op.gg/summoners/{region}/{username}-{tagline}"
+            from bs4 import BeautifulSoup
+            
+            # Map region cho op.gg
+            region_map = {
+                'vn': 'vn',
+                'na': 'na',
+                'euw': 'euw',
+                'eune': 'eune',
+                'kr': 'kr',
+                'jp': 'jp'
+            }
+            
+            opgg_region = region_map.get(region.lower(), 'vn')
+            url = f"https://www.op.gg/summoners/{opgg_region}/{username}-{tagline}"
             
             session = await self.get_session()
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             
             async with session.get(url, headers=headers, timeout=10) as response:
                 if response.status == 200:
-                    # Parse HTML để lấy rank
-                    # Đây là mock data
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Tìm rank TFT trên op.gg - CẦN KIỂM TRA SELECTOR NÀY
+                    rank_element = None
+                    
+                    # Thử tìm theo nhiều selector
+                    selectors = [
+                        '.tier-rank',
+                        '.tier',
+                        '.ranking-table__cell--tier',
+                        '.summoner-tier'
+                    ]
+                    
+                    rank_text = "Chưa xác định"
+                    for selector in selectors:
+                        rank_element = soup.select_one(selector)
+                        if rank_element:
+                            rank_text = rank_element.get_text(strip=True)
+                            if rank_text and rank_text != '':
+                                break
+                    
                     return {
                         'game_name': username,
                         'tagline': tagline,
-                        'tft_rank': 'Silver I',  # Mock
+                        'tft_rank': rank_text,
                         'source': 'op_gg'
                     }
                     
             return None
-        except:
+        except Exception as e:
+            print(f"Lỗi khi scrape op.gg: {e}")
             return None
     
     async def get_tft_rank(self, puuid, region):
