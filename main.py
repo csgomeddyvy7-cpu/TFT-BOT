@@ -50,7 +50,7 @@ bot = commands.Bot(
 # Khởi tạo các service
 db = Database()
 riot_verifier = RiotVerifier(config.RIOT_API_KEY)
-tft_service = TFTService(config.RIOT_API_KEY)  # Truyền API key vào
+tft_service = TFTService(config.RIOT_API_KEY)
 gemini_analyzer = GeminiAnalyzer(config.GEMINI_API_KEY)
 
 # Biến tạm lưu trạng thái xác thực
@@ -66,6 +66,13 @@ async def on_ready():
     print(f'🎮 Prefix: {config.PREFIX}')
     print(f'📊 Database: {len(db.get_all_players())} players')
     print(f'🔧 Gemini AI: {gemini_analyzer.status}')
+    print(f'🎯 Riot API: {"✅ Đã kích hoạt" if riot_verifier.has_api_key else "❌ Chưa kích hoạt"}')
+    
+    # Kiểm tra API key
+    if not config.RIOT_API_KEY:
+        print("⚠️ CẢNH BÁO: Không có RIOT_API_KEY! Bot sẽ KHÔNG thể lấy dữ liệu TFT!")
+    else:
+        print(f"✅ RIOT_API_KEY: Đã cấu hình (độ dài: {len(config.RIOT_API_KEY)} ký tự)")
     
     # Khởi động task tự động
     if not auto_check_matches.is_running():
@@ -173,27 +180,47 @@ async def track_player(ctx, riot_id: str, region: str = 'vn'):
             description=f"Không thể xác thực Riot ID: `{riot_id}`",
             color=0xff0000
         )
+        
+        error_msg = verification_result.get('error', 'Không rõ lý do')
+        api_source = verification_result.get('api_source', 'Không rõ nguồn')
+        
         embed.add_field(
             name="📝 Lý do:",
-            value=verification_result.get('error', 'Không rõ lý do'),
+            value=error_msg,
             inline=False
         )
+        
+        embed.add_field(
+            name="📡 Nguồn lỗi:",
+            value=api_source,
+            inline=False
+        )
+        
         embed.add_field(
             name="💡 Gợi ý:",
-            value="1. Kiểm tra lại chính tả\n2. Kiểm tra Region\n3. Đảm bảo tài khoản tồn tại",
+            value="1. Kiểm tra lại chính tả\n2. Kiểm tra Region\n3. Đảm bảo tài khoản tồn tại\n4. Kiểm tra Riot API Key",
             inline=False
         )
+        
         await msg.edit(embed=embed)
         return
     
     # Xác thực thành công - hiển thị thông tin
     account_data = verification_result['data']
+    api_source = verification_result.get('api_source', 'Riot API')
     
     embed = discord.Embed(
         title="✅ Đã tìm thấy tài khoản!",
         description=f"**Riot ID:** `{riot_id}`",
         color=0x00ff00,
         timestamp=datetime.now()
+    )
+    
+    # Thêm nguồn dữ liệu
+    embed.add_field(
+        name="📡 Nguồn dữ liệu",
+        value=api_source,
+        inline=False
     )
     
     # Thêm thông tin cơ bản
@@ -211,34 +238,66 @@ async def track_player(ctx, riot_id: str, region: str = 'vn'):
             inline=True
         )
     
-    # Lấy thông tin TFT - CẢI THIỆN: Hiển thị rank đầy đủ
+    if account_data.get('puuid'):
+        embed.add_field(
+            name="🔑 PUUID",
+            value=f"`{account_data['puuid'][:8]}...`",
+            inline=True
+        )
+    
+    # Lấy thông tin TFT từ Riot API
+    print(f"\n📊 Đang lấy thông tin TFT cho {riot_id}...")
     tft_info = await tft_service.get_player_overview(riot_id, region)
     
-    if tft_info and tft_info.get('full_rank'):
+    if tft_info and 'error' in tft_info:
+        # Có lỗi khi lấy thông tin TFT
+        embed.add_field(
+            name="❌ Lỗi lấy thông tin TFT",
+            value=tft_info.get('message', 'Không thể lấy thông tin TFT'),
+            inline=False
+        )
+        
+        if tft_info.get('api_source'):
+            embed.add_field(
+                name="📡 Nguồn lỗi",
+                value=tft_info['api_source'],
+                inline=False
+            )
+    elif tft_info and tft_info.get('full_rank'):
+        # Thông tin TFT đầy đủ
         embed.add_field(
             name="📊 Rank TFT",
             value=f"**{tft_info['full_rank']}**",
             inline=True
         )
+        
+        embed.add_field(
+            name="🎮 Level",
+            value=f"Level {tft_info.get('summonerLevel', 'N/A')}",
+            inline=True
+        )
+        
+        if tft_info.get('wins') is not None:
+            total_games = tft_info.get('total_games', 0)
+            if total_games > 0:
+                win_rate = (tft_info['wins'] / total_games) * 100
+                embed.add_field(
+                    name="📈 Thống kê",
+                    value=f"Tổng: {total_games} trận\nThắng: {tft_info['wins']} ({win_rate:.1f}%)",
+                    inline=True
+                )
+        
+        if tft_info.get('api_source'):
+            embed.add_field(
+                name="📡 Nguồn rank TFT",
+                value=tft_info['api_source'],
+                inline=False
+            )
     elif tft_info and tft_info.get('rank'):
+        # Thông tin TFT cơ bản
         embed.add_field(
             name="📊 Rank TFT",
             value=f"**{tft_info['rank']}**\n{tft_info.get('lp', '')} LP",
-            inline=True
-        )
-    
-    if tft_info and tft_info.get('level'):
-        embed.add_field(
-            name="🎮 Level",
-            value=f"Level {tft_info['level']}",
-            inline=True
-        )
-    
-    if tft_info and tft_info.get('wins'):
-        win_rate = (tft_info['wins'] / max(tft_info['total_games'], 1)) * 100
-        embed.add_field(
-            name="📈 Thống kê",
-            value=f"Tổng: {tft_info['total_games']} trận\nThắng: {tft_info['wins']} ({win_rate:.1f}%)",
             inline=True
         )
     
@@ -352,7 +411,8 @@ async def confirm_ownership(ctx, riot_id: str):
         value=f"• Riot ID: `{session['riot_id']}`\n"
               f"• Region: `{session['region'].upper()}`\n"
               f"• Channel: <#{ctx.channel.id}>\n"
-              f"• Verified: ✅",
+              f"• Verified: ✅\n"
+              f"• Nguồn: {session['data'].get('api_source', 'Riot API')}",
         inline=False
     )
     
@@ -514,9 +574,13 @@ async def list_my_players(ctx):
         elif player.get('tft_info') and player['tft_info'].get('rank'):
             rank_info = f"{player['tft_info']['rank']} {player['tft_info'].get('lp', '')}LP"
         
+        # Hiển thị nguồn dữ liệu
+        source_info = player.get('tft_info', {}).get('source', 'Unknown')
+        
         embed.add_field(
             name=f"{status} {player['riot_id']}",
             value=f"• Rank: {rank_info}\n"
+                  f"• Nguồn: {source_info}\n"
                   f"• Region: {player.get('region', 'N/A').upper()}\n"
                   f"• Theo dõi từ: {player.get('tracking_started', 'N/A')[:10]}\n"
                   f"• Match cuối: {last_match}",
@@ -554,9 +618,14 @@ async def list_all_players(ctx):
             discord_user = f"<@{player['discord_id']}>"
             verified = "✅" if player.get('verified') else "❌"
             
+            rank_info = "N/A"
+            if player.get('tft_info') and player['tft_info'].get('full_rank'):
+                rank_info = player['tft_info']['full_rank']
+            
             embed.add_field(
                 name=f"{verified} {player['riot_id']}",
                 value=f"• Discord: {discord_user}\n"
+                      f"• Rank: {rank_info}\n"
                       f"• Region: {player.get('region', 'N/A').upper()}\n"
                       f"• Channel: <#{player.get('channel_id', '')}>",
                 inline=True
@@ -597,11 +666,19 @@ async def list_all_players(ctx):
 @tasks.loop(minutes=5)
 async def auto_check_matches():
     """Tự động kiểm tra trận đấu mới mỗi 5 phút"""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Đang kiểm tra TFT matches...")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔄 Đang kiểm tra TFT matches...")
     
     players = db.get_all_players()
     
     if not players:
+        print("📭 Không có players nào để kiểm tra")
+        return
+    
+    print(f"📊 Sẽ kiểm tra {len(players)} player(s)")
+    
+    # Kiểm tra API key
+    if not riot_verifier.has_api_key:
+        print("❌ Không có RIOT_API_KEY, không thể kiểm tra matches!")
         return
     
     # Nhóm players theo Discord channel để gộp thông báo
@@ -616,6 +693,8 @@ async def auto_check_matches():
         except:
             continue
     
+    print(f"📍 Phân bố players theo {len(channel_players)} channel(s)")
+    
     # Kiểm tra từng channel
     for channel_id, channel_players_list in channel_players.items():
         try:
@@ -627,19 +706,27 @@ async def auto_check_matches():
                     riot_id = player['riot_id']
                     region = player.get('region', 'vn')
                     
-                    # Lấy match history
+                    print(f"  🔍 Đang kiểm tra {riot_id}...")
+                    
+                    # Lấy match history từ Riot API
                     matches = await tft_service.get_match_history(riot_id, region, limit=1)
                     
                     if not matches or len(matches) == 0:
+                        print(f"    ℹ️ Không có match gần đây")
                         continue
                     
                     latest_match = matches[0]
                     match_id = latest_match.get('match_id')
+                    placement = latest_match.get('placement', 'N/A')
+                    
+                    print(f"    ✅ Match mới: #{placement} (ID: {match_id[:10]}...)")
                     
                     # Kiểm tra xem đã thông báo match này chưa
                     last_notified_match = player.get('last_match_id')
                     
                     if last_notified_match != match_id:
+                        print(f"    📢 Chưa thông báo match này!")
+                        
                         # Match mới! Thêm vào nhóm
                         if match_id not in players_by_match:
                             players_by_match[match_id] = {
@@ -656,76 +743,47 @@ async def auto_check_matches():
                             match_id,
                             latest_match.get('timestamp')
                         )
+                    else:
+                        print(f"    ℹ️ Đã thông báo match này rồi")
                         
                 except Exception as e:
-                    print(f"Lỗi khi kiểm tra {player['riot_id']}: {e}")
+                    print(f"    ❌ Lỗi khi kiểm tra {player['riot_id']}: {e}")
                     continue
             
             # Gửi thông báo
             channel = bot.get_channel(channel_id)
-            if channel:
-                for match_id, match_info in players_by_match.items():
-                    players_list = match_info['players']
-                    match_data = match_info['match_data']
-                    
-                    if len(players_list) > 1:
-                        # Nhiều players cùng trận - gửi thông báo nhóm
-                        await send_group_match_notification(channel, players_list, match_data)
-                    else:
-                        # Một player - gửi thông báo riêng
-                        await send_match_notification(channel, players_list[0], match_data)
-                    
-                    # Delay để tránh rate limit
-                    await asyncio.sleep(1)
+            if not channel:
+                print(f"❌ Channel {channel_id} không tồn tại")
+                continue
+            
+            print(f"  📢 Sẽ gửi thông báo cho {len(players_by_match)} match(es) mới")
+            
+            for match_id, match_info in players_by_match.items():
+                players_list = match_info['players']
+                match_data = match_info['match_data']
+                
+                print(f"    🎮 Match {match_id[:10]}... có {len(players_list)} player(s)")
+                
+                if len(players_list) > 1:
+                    # Nhiều players cùng trận - gửi thông báo nhóm
+                    await send_group_match_notification(channel, players_list, match_data)
+                else:
+                    # Một player - gửi thông báo riêng
+                    await send_match_notification(channel, players_list[0], match_data)
+                
+                # Delay để tránh rate limit
+                await asyncio.sleep(2)
                     
         except Exception as e:
-            print(f"Lỗi khi xử lý channel {channel_id}: {e}")
-
-async def check_player_matches(player):
-    """Kiểm tra và thông báo match mới cho một player"""
-    try:
-        riot_id = player['riot_id']
-        region = player.get('region', 'vn')
-        channel_id = int(player['channel_id'])
-        
-        # Lấy channel
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            print(f"Channel {channel_id} không tồn tại")
-            return
-        
-        # Lấy match history
-        matches = await tft_service.get_match_history(riot_id, region, limit=1)
-        
-        if not matches or len(matches) == 0:
-            return
-        
-        latest_match = matches[0]
-        match_id = latest_match.get('match_id')
-        
-        # Kiểm tra xem đã thông báo match này chưa
-        last_notified_match = player.get('last_match_id')
-        
-        if last_notified_match != match_id:
-            # Match mới! Cập nhật database
-            db.update_last_match(
-                player['discord_id'],
-                riot_id,
-                match_id,
-                latest_match.get('timestamp')
-            )
-            
-            # Tạo và gửi thông báo
-            await send_match_notification(channel, player, latest_match)
-            
-    except Exception as e:
-        print(f"Lỗi check_player_matches: {e}")
+            print(f"❌ Lỗi khi xử lý channel {channel_id}: {e}")
 
 async def send_match_notification(channel, player, match_data):
     """Gửi thông báo trận đấu mới"""
     try:
         riot_id = player['riot_id']
         settings = player.get('settings', {})
+        
+        print(f"    📤 Đang gửi thông báo cho {riot_id}...")
         
         # Tạo mention
         mention = ""
@@ -778,6 +836,14 @@ async def send_match_notification(channel, player, match_data):
                 inline=True
             )
         
+        # Thêm thông tin match
+        if match_data.get('source'):
+            embed.add_field(
+                name="📡 Nguồn dữ liệu",
+                value=match_data['source'],
+                inline=False
+            )
+        
         # Thêm phân tích AI nếu được bật
         if settings.get('include_ai_analysis', True) and gemini_analyzer.is_enabled():
             ai_analysis = await gemini_analyzer.analyze_match(match_data, riot_id)
@@ -799,14 +865,16 @@ async def send_match_notification(channel, player, match_data):
         
         # Gửi thông báo
         await channel.send(mention, embed=embed)
-        print(f"✅ Đã thông báo match mới của {riot_id}")
+        print(f"    ✅ Đã gửi thông báo match mới của {riot_id}")
         
     except Exception as e:
-        print(f"Lỗi send_match_notification: {e}")
+        print(f"    ❌ Lỗi send_match_notification: {e}")
 
 async def send_group_match_notification(channel, players, match_data):
     """Gửi thông báo cho nhóm players cùng trận"""
     try:
+        print(f"    👥 Đang gửi thông báo nhóm cho {len(players)} players...")
+        
         # Tạo danh sách mentions
         mentions = []
         for player in players:
@@ -829,6 +897,7 @@ async def send_group_match_notification(channel, players, match_data):
         for player in players:
             riot_id = player['riot_id']
             # Trong thực tế cần lấy placement chính xác từ match_data
+            # Ở đây tạm thời dùng placement của match
             player_placement = match_data.get('placement', 8)
             
             # Lấy rank hiện tại của player
@@ -867,11 +936,19 @@ async def send_group_match_notification(channel, players, match_data):
                 inline=False
             )
         
+        # Thêm thông tin match
+        if match_data.get('source'):
+            embed.add_field(
+                name="📡 Nguồn dữ liệu",
+                value=match_data['source'],
+                inline=False
+            )
+        
         await channel.send(mention_text, embed=embed)
-        print(f"✅ Đã thông báo match nhóm cho {len(players)} players")
+        print(f"    ✅ Đã gửi thông báo match nhóm cho {len(players)} players")
         
     except Exception as e:
-        print(f"Lỗi send_group_match_notification: {e}")
+        print(f"    ❌ Lỗi send_group_match_notification: {e}")
 
 @bot.command(name='forcecheck')
 async def force_check(ctx, riot_id: str = None):
@@ -891,7 +968,7 @@ async def force_check(ctx, riot_id: str = None):
         for player in players:
             try:
                 await check_player_matches(player)
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)  # Delay để tránh rate limit
             except Exception as e:
                 print(f"Force check error for {player['riot_id']}: {e}")
         
@@ -908,6 +985,46 @@ async def force_check(ctx, riot_id: str = None):
     await ctx.send(f"🔍 Đang kiểm tra {riot_id}...")
     await check_player_matches(player)
     await ctx.send(f"✅ Đã kiểm tra xong {riot_id}!")
+
+async def check_player_matches(player):
+    """Kiểm tra và thông báo match mới cho một player"""
+    try:
+        riot_id = player['riot_id']
+        region = player.get('region', 'vn')
+        channel_id = int(player['channel_id'])
+        
+        # Lấy channel
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            print(f"Channel {channel_id} không tồn tại")
+            return
+        
+        # Lấy match history từ Riot API
+        matches = await tft_service.get_match_history(riot_id, region, limit=1)
+        
+        if not matches or len(matches) == 0:
+            return
+        
+        latest_match = matches[0]
+        match_id = latest_match.get('match_id')
+        
+        # Kiểm tra xem đã thông báo match này chưa
+        last_notified_match = player.get('last_match_id')
+        
+        if last_notified_match != match_id:
+            # Match mới! Cập nhật database
+            db.update_last_match(
+                player['discord_id'],
+                riot_id,
+                match_id,
+                latest_match.get('timestamp')
+            )
+            
+            # Tạo và gửi thông báo
+            await send_match_notification(channel, player, latest_match)
+            
+    except Exception as e:
+        print(f"Lỗi check_player_matches: {e}")
 
 # ========== UTILITY COMMANDS ==========
 
@@ -933,8 +1050,8 @@ async def ping_command(ctx):
     embed.add_field(
         name="🤖 Dịch vụ",
         value=f"• Gemini AI: {gemini_analyzer.status}\n"
-              f"• Riot API: {'✅' if riot_verifier.has_api_key else '⚠️'}\n"
-              f"• Auto-check: {'✅' if auto_check_matches.is_running() else '❌'}\n"
+              f"• Riot API: {'✅ Đã kích hoạt' if riot_verifier.has_api_key else '❌ Chưa kích hoạt'}\n"
+              f"• Auto-check: {'✅ Đang chạy' if auto_check_matches.is_running() else '❌ Dừng'}\n"
               f"• Health Check: ✅ (port 8080)",
         inline=True
     )
@@ -992,7 +1109,17 @@ async def help_command(ctx):
               "• Tự động thông báo khi có match mới\n"
               "• Phân tích AI từ Gemini (nếu có key)\n"
               "• Thông báo nhóm khi chơi cùng trận\n"
-              "• Health check server port 8080",
+              "• Health check server port 8080\n"
+              "• Log chi tiết từng bước API call",
+        inline=False
+    )
+    
+    # Requirements
+    embed.add_field(
+        name="⚙️ Yêu cầu:",
+        value="• RIOT_API_KEY (bắt buộc cho TFT data)\n"
+              "• GEMINI_API_KEY (tùy chọn cho AI analysis)\n"
+              "• DISCORD_BOT_TOKEN (bắt buộc)",
         inline=False
     )
     
@@ -1081,20 +1208,43 @@ async def settings_command(ctx, setting: str = None, value: str = None):
 bot_start_time = datetime.now()
 
 if __name__ == "__main__":
+    # Kiểm tra config
+    errors = []
+    
     if not config.DISCORD_TOKEN:
-        print("❌ Lỗi: DISCORD_TOKEN không được tìm thấy!")
-        print("ℹ️ Vui lòng đặt biến môi trường DISCORD_TOKEN")
+        errors.append("DISCORD_TOKEN is required")
+    
+    if not config.RIOT_API_KEY:
+        errors.append("RIOT_API_KEY is required for TFT data")
+    
+    if errors:
+        print("❌ Lỗi cấu hình:")
+        for error in errors:
+            print(f"  • {error}")
+        print("\nℹ️ Vui lòng đặt biến môi trường:")
+        print("  - DISCORD_BOT_TOKEN")
+        print("  - RIOT_API_KEY (lấy từ Riot Developer Portal)")
+        print("  - GEMINI_API_KEY (tùy chọn, cho AI analysis)")
         exit(1)
     
+    print("=" * 50)
     print("🚀 Khởi động TFT Auto Tracker Bot...")
+    print("=" * 50)
     print(f"📊 Database: {db.file_path}")
     print(f"🤖 Gemini AI: {gemini_analyzer.status}")
-    print(f"🎮 Riot Verifier: {'✅ Ready' if riot_verifier.has_api_key else '⚠️ Limited'}")
+    print(f"🎯 Riot API: {'✅ Đã cấu hình' if riot_verifier.has_api_key else '❌ Chưa cấu hình'}")
+    
+    if riot_verifier.has_api_key:
+        print(f"   • API Key độ dài: {len(config.RIOT_API_KEY)} ký tự")
+        print(f"   • Nguồn dữ liệu: Riot API TFT chính thức")
     
     # Khởi động Flask server trong thread riêng
     print("🌐 Khởi động health check server trên port 8080...")
     flask_thread = threading.Thread(target=run_flask_app, daemon=True)
     flask_thread.start()
+    
+    print("✅ Bot đang khởi động...")
+    print("=" * 50)
     
     # Chạy bot
     bot.run(config.DISCORD_TOKEN)
