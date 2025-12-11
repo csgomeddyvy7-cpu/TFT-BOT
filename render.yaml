@@ -13,4 +13,3 @@ services:
       - key: GEMINI_API_KEY
         sync: false
         optional: true
-    healthCheckPath: /health
