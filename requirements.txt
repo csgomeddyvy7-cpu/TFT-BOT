@@ -1,6 +1,0 @@
-discord.py==2.3.2
-aiohttp==3.9.1
-google-generativeai==0.3.2
-python-dotenv==1.0.0
-flask==2.3.3
-waitress==3.0.0
