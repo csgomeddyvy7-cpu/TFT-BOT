@@ -8,7 +8,7 @@ from keep_alive import keep_alive
 
 # --- CẤU HÌNH ---
 # THAY ID KÊNH DISCORD CỦA BẠN VÀO DƯỚI ĐÂY
-CHANNEL_ID = 123456789012345678 
+CHANNEL_ID = 1448163760480063519 
 
 # Danh sách người chơi (Đã điền sẵn)
 PLAYERS = [
