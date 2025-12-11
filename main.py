@@ -6,8 +6,6 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 import google.generativeai as genai
-from aiohttp import web
-import threading
 
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -578,24 +576,31 @@ async def check_matches():
         except:
             continue
 
-async def health_check(request):
-    return web.Response(text="Bot đang hoạt động!", status=200)
-
-def run_web_server():
+async def run_health_server():
+    """Đơn giản hóa: không dùng web server phức tạp"""
+    from aiohttp import web
+    
+    async def health_check(request):
+        return web.Response(text='Bot is running!', status=200)
+    
     app = web.Application()
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
     
-    port = int(os.environ.get('PORT', 8080))
-    web.run_app(app, port=port)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
+    await site.start()
+    
+    print(f"✅ Health check server started on port {os.environ.get('PORT', 8080)}")
+    
+    # Keep server running
+    await asyncio.Event().wait()
 
 if __name__ == '__main__':
     if not TOKEN:
         print("❌ Lỗi: Thiếu DISCORD_BOT_TOKEN!")
         exit(1)
     
-    import threading
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    
+    # Chạy bot bình thường, Render sẽ tự có health check
     bot.run(TOKEN)
