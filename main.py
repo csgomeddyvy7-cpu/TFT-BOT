@@ -1,77 +1,76 @@
 import discord
 import os
-import requests
+import cloudscraper # Thư viện vượt tường lửa Cloudflare
 from discord.ext import commands
 from bs4 import BeautifulSoup
 from urllib.parse import quote
-from fake_useragent import UserAgent 
 from keep_alive import keep_alive 
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- HÀM CÀO DỮ LIỆU TỪ LEAGUEOFGRAPHS (ĐÃ SỬA LỖI RETURN) ---
-def get_rank_info(name, tag):
-    ua = UserAgent()
-    headers = {
-        "User-Agent": ua.random,
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-
-    encoded_name = quote(name).replace("%20", "+") 
-    url = f"https://www.leagueofgraphs.com/tft/summoner/vn/{encoded_name}-{tag}"
-
+# --- HÀM CÀO DỮ LIỆU BẰNG CLOUDSCRAPER ---
+def get_tft_stats(name, tag):
+    # Tạo một trình duyệt giả lập mạnh mẽ
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    
+    # URL Tactics.tools (Hỗ trợ tiếng Việt và Tag tốt nhất)
+    # Cấu trúc: https://tactics.tools/player/vn/Tên/Tag
+    encoded_name = quote(name)
+    url = f"https://tactics.tools/player/vn/{encoded_name}/{tag}"
+    
     try:
-        response = requests.get(url, headers=headers)
+        # Dùng scraper để gửi yêu cầu (Thay vì requests)
+        response = scraper.get(url)
         
+        # Kiểm tra nếu bị lỗi 404 (Không tìm thấy tên)
         if response.status_code == 404:
-            return None, "❌ Không tìm thấy người chơi. Hãy thử viết không dấu hoặc kiểm tra lại Tag."
+            return None, "❌ Không tìm thấy người chơi (Kiểm tra lại Tên và Tag)."
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Lấy Meta Description
+
+        # 1. Lấy mô tả (Rank, Winrate) từ thẻ Meta Description
+        # Tactics.tools luôn để thông tin này ở đây
         meta_desc = soup.find('meta', attrs={'name': 'description'})
+        
+        # 2. Lấy link ảnh (Stat Card) từ thẻ og:image
+        meta_image = soup.find('meta', property='og:image')
+        
         if meta_desc:
-            content = meta_desc['content']
+            desc_content = meta_desc['content']
             
-            # Xử lý chuỗi an toàn hơn
-            if " / " in content:
-                clean_info = content.split(" / ")[0]
-                extra_info = content.split(" / ")[1]
-            else:
-                clean_info = content
-                extra_info = "Không có thông tin thêm"
+            # Kiểm tra xem có bị chuyển hướng về trang chủ không
+            # Nếu nội dung là "TFT Stats..." chung chung nghĩa là bị lỗi
+            if "visualizations and statistics" in desc_content or "set 13" in desc_content.lower():
+                 return None, "⚠️ Web đang bảo trì hoặc chặn bot tạm thời."
+
+            image_url = meta_image['content'] if meta_image else None
             
-            # QUAN TRỌNG: Trả về 2 giá trị (Dictionary, None)
+            # Sửa link ảnh nếu có dấu cách
+            if image_url:
+                image_url = image_url.replace(" ", "%20")
+
             return {
                 "url": url,
-                "rank": clean_info,
-                "stats": extra_info,
-                "full": content
-            }, None 
-        
-        # Backup: Tìm thủ công
-        rank_tier = soup.find(class_="league-tier-name")
-        rank_lp = soup.find(class_="league-points")
-        
-        if rank_tier and rank_lp:
-             # QUAN TRỌNG: Trả về 2 giá trị (Dictionary, None)
-             return {
-                "url": url,
-                "rank": f"{rank_tier.text.strip()} - {rank_lp.text.strip()}",
-                "stats": "Không lấy được tỷ lệ thắng",
-                "full": "..."
+                "desc": desc_content,
+                "image": image_url
             }, None
-
-        return None, "Web đổi cấu trúc, không đọc được dữ liệu."
+            
+        return None, "Không đọc được dữ liệu thẻ Meta."
 
     except Exception as e:
-        return None, f"Lỗi Bot: {str(e)}"
+        return None, f"Lỗi Scraper: {str(e)}"
 
 @bot.event
 async def on_ready():
-    print(f'Bot {bot.user} đã sẵn sàng soi rank!')
+    print(f'Bot {bot.user} đã online (Mode: CloudScraper)')
 
 @bot.command()
 async def rank(ctx, *, full_name_tag):
@@ -83,29 +82,25 @@ async def rank(ctx, *, full_name_tag):
     tag = parts[-1].strip()
     name = "".join(parts[:-1]).strip()
     
-    await ctx.send(f"🔍 Đang truy cập LeagueOfGraphs để soi **{name}#{tag}**...")
+    msg = await ctx.send(f"🔍 Đang phá tường lửa để soi **{name}#{tag}**...")
     
-    # Ở đây nhận về 2 giá trị nên sẽ không bị lỗi nữa
-    data, error = get_rank_info(name, tag)
+    data, error = get_tft_stats(name, tag)
     
     if data:
         embed = discord.Embed(
-            title=f"Hồ sơ TFT: {name}#{tag}",
+            title=f"Hồ sơ: {name}#{tag}",
             url=data['url'],
-            description="Dưới đây là thông tin chi tiết:",
-            color=0x3498db 
+            description=f"📝 {data['desc']}", # Rank và chỉ số sẽ hiện ở đây
+            color=0x9b59b6 # Màu tím
         )
         
-        embed.add_field(name="🏆 Rank Hiện Tại", value=f"**{data.get('rank', 'N/A')}**", inline=False)
+        if data['image']:
+            embed.set_image(url=data['image'])
         
-        if data.get('stats'):
-             embed.add_field(name="📊 Chỉ Số", value=data['stats'], inline=False)
-        
-        embed.set_footer(text="Nguồn: LeagueOfGraphs (Cập nhật realtime)")
-        
-        await ctx.send(embed=embed)
+        embed.set_footer(text="Dữ liệu từ Tactics.tools")
+        await msg.edit(content="", embed=embed)
     else:
-        await ctx.send(f"{error}")
+        await msg.edit(content=f"{error}")
 
 keep_alive()
 try:
