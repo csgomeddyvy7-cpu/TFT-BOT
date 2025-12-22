@@ -3,95 +3,86 @@ import os
 import requests
 from discord.ext import commands
 from bs4 import BeautifulSoup
-from keep_alive import keep_alive # Giữ bot sống trên Render
+from urllib.parse import quote # Thư viện để mã hóa tên có dấu cách
+from keep_alive import keep_alive 
 
-# Cấu hình Bot
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Hàm cào dữ liệu từ Tactics.tools
+# --- HÀM CÀO DỮ LIỆU MỚI (DAK.GG) ---
 def scrape_tft_stats(name, tag):
-    # Tạo URL chuẩn
-    url = f"https://tactics.tools/player/vn/{name}/{tag}"
+    # Xử lý tên để đưa vào URL (Ví dụ: Trông Anh Ngược -> Trông%20Anh%20Ngược)
+    encoded_name = quote(name)
+    
+    # Dak.gg dùng định dạng: tên-tag (dấu gạch ngang)
+    # URL: https://dak.gg/tft/profile/vn/Trông%20Anh%20Ngược-CiS
+    url = f"https://dak.gg/tft/profile/vn/{encoded_name}-{tag}"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     
     try:
         response = requests.get(url, headers=headers)
         
         if response.status_code == 404:
-            return None, "Không tìm thấy người chơi này. Kiểm tra lại tên và tag (VD: Zyud#6969)"
+            return None, "Không tìm thấy người chơi này trên Dak.gg."
         
-        if response.status_code != 200:
-            return None, f"Lỗi kết nối đến web (Code {response.status_code})"
-
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # --- MẸO HAY: LẤY DỮ LIỆU TỪ THẺ META ---
-        # Tactics.tools tóm tắt mọi thứ trong thẻ meta description để hiển thị lên Google/Facebook
-        # Chúng ta chỉ cần lấy cái đó là đủ thông tin, không cần đào sâu vào HTML
+        # --- LẤY DỮ LIỆU TỪ THẺ META (Dak.gg làm cái này rất kỹ) ---
+        # Thẻ này chứa: "Trông Anh Ngược #CiS - Emerald IV 45LP. Win Rate 15.2%..."
+        meta_desc = soup.find('meta', property='og:description')
         
-        # 1. Lấy Rank và Tên từ Tiêu đề trang (Title)
-        # VD Title: "Zyud #6969 - Emerald IV 23 LP - TFT Stats"
-        page_title = soup.title.text.strip()
-        
-        # 2. Lấy Tỷ lệ thắng/Top 4 từ thẻ Meta Description
-        # Thẻ này thường chứa: "Zyud #6969 is a... Win Rate: 15.5%, Top 4 Rate: 55.2%..."
-        meta_desc = soup.find('meta', attrs={'name': 'description'})
-        description = meta_desc['content'] if meta_desc else "Không lấy được chi tiết."
-
-        return page_title, description
+        if meta_desc:
+            content = meta_desc['content']
+            # Format lại chuỗi cho đẹp
+            # Dữ liệu gốc thường là: "Name #Tag - Rank LP. Win Rate..."
+            # Chúng ta sẽ tách ra để hiển thị từng dòng
+            
+            return url, content
+        else:
+            return url, "Không lấy được chi tiết (Web đổi cấu trúc)."
 
     except Exception as e:
         return None, f"Lỗi code: {str(e)}"
 
 @bot.event
 async def on_ready():
-    print(f'Bot đã đăng nhập với tên: {bot.user}')
-
-@bot.command()
-async def ping(ctx):
-    await ctx.send('Pong! Bot vẫn đang sống nhăn răng.')
+    print(f'Bot đã online: {bot.user}')
 
 @bot.command()
 async def rank(ctx, *, full_name_tag):
-    """
-    Cách dùng: !rank Tên Người Chơi#Tag
-    Ví dụ: !rank Trông Anh Ngược#CiS
-    """
     if '#' not in full_name_tag:
-        await ctx.send("⚠️ Sai cú pháp! Vui lòng nhập kèm Tag. Ví dụ: `!rank Trông Anh Ngược#CiS`")
+        await ctx.send("⚠️ Sai cú pháp! Nhập: `!rank Tên#Tag` (VD: `!rank Trông Anh Ngược#CiS`)")
         return
 
     # Tách tên và tag
-    try:
-        # Xử lý chuỗi để lấy phần cuối làm tag
-        parts = full_name_tag.split('#')
-        tag = parts[-1].strip()
-        name = "".join(parts[:-1]).strip() # Ghép lại tên nếu tên có dấu # (hiếm nhưng đề phòng)
-        
-        await ctx.send(f"🔍 Đang đi soi profile của **{name}#{tag}**...")
-        
-        title, desc = scrape_tft_stats(name, tag)
-        
-        if title:
-            # Gửi kết quả đẹp mắt
-            msg = f"**KẾT QUẢ SOI KÈO:**\n"
-            msg += f"👤 **{title}**\n" # Dòng này chứa Rank và LP
-            msg += f"📊 {desc}\n"      # Dòng này chứa Win Rate, Top 4
-            msg += f"🔗 Link: <https://tactics.tools/player/vn/{name.replace(' ', '%20')}/{tag}>"
-            await ctx.send(msg)
-        else:
-            await ctx.send(f"❌ {desc}") # Gửi lỗi
-            
-    except Exception as e:
-        await ctx.send(f"❌ Có lỗi xảy ra: {e}")
+    parts = full_name_tag.split('#')
+    tag = parts[-1].strip()
+    name = "".join(parts[:-1]).strip()
+    
+    await ctx.send(f"🔍 Đang check {name}#{tag} trên Dak.gg...")
+    
+    url, result = scrape_tft_stats(name, tag)
+    
+    if url and result:
+        # Tạo khung hiển thị đẹp (Embed)
+        embed = discord.Embed(
+            title=f"Kết quả: {name}#{tag}",
+            url=url,
+            description=result, # Nội dung Rank, LP nằm ở đây
+            color=0x00ff00 # Màu xanh lá
+        )
+        embed.set_footer(text="Dữ liệu từ Dak.gg")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"❌ Lỗi: {result}")
 
-# --- CHẠY BOT ---
 keep_alive()
 try:
     bot.run(os.environ.get('DISCORD_TOKEN'))
 except Exception as e:
-    print(f"Không lấy được Token: {e}")
+    print(f"Lỗi Token: {e}")
