@@ -3,51 +3,49 @@ import os
 import requests
 from discord.ext import commands
 from bs4 import BeautifulSoup
-from urllib.parse import quote # Thư viện để mã hóa tên có dấu cách
+from urllib.parse import quote 
 from keep_alive import keep_alive 
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- HÀM CÀO DỮ LIỆU MỚI (DAK.GG) ---
-def scrape_tft_stats(name, tag):
-    # Xử lý tên để đưa vào URL (Ví dụ: Trông Anh Ngược -> Trông%20Anh%20Ngược)
+# --- HÀM LẤY ẢNH THỐNG KÊ TỪ TACTICS.TOOLS ---
+def get_stat_card(name, tag):
+    # 1. Xử lý tên tiếng Việt (Mã hóa URL)
+    # Ví dụ: "Trông Anh Ngược" -> "Trông%20Anh%20Ngược"
     encoded_name = quote(name)
     
-    # Dak.gg dùng định dạng: tên-tag (dấu gạch ngang)
-    # URL: https://dak.gg/tft/profile/vn/Trông%20Anh%20Ngược-CiS
-    url = f"https://dak.gg/tft/profile/vn/{encoded_name}-{tag}"
+    # URL của Tactics.tools (Trang này hỗ trợ tiếng Việt tốt nhất)
+    url = f"https://tactics.tools/player/vn/{encoded_name}/{tag}"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
     try:
         response = requests.get(url, headers=headers)
         
+        # Nếu không tìm thấy người chơi
         if response.status_code == 404:
-            return None, "Không tìm thấy người chơi này trên Dak.gg."
-        
+            return None, None, "❌ Không tìm thấy tên này. Bạn kiểm tra lại dấu cách hoặc Tag xem."
+
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # --- LẤY DỮ LIỆU TỪ THẺ META (Dak.gg làm cái này rất kỹ) ---
-        # Thẻ này chứa: "Trông Anh Ngược #CiS - Emerald IV 45LP. Win Rate 15.2%..."
-        meta_desc = soup.find('meta', property='og:description')
+        # 2. MẸO: Lấy link ảnh từ thẻ Meta "og:image"
+        # Đây là tấm ảnh chứa toàn bộ thông tin Rank/Winrate mà web tự tạo ra
+        meta_image = soup.find('meta', property='og:image')
         
-        if meta_desc:
-            content = meta_desc['content']
-            # Format lại chuỗi cho đẹp
-            # Dữ liệu gốc thường là: "Name #Tag - Rank LP. Win Rate..."
-            # Chúng ta sẽ tách ra để hiển thị từng dòng
-            
-            return url, content
+        if meta_image:
+            image_url = meta_image['content']
+            # Tactics.tools đôi khi dùng ảnh mặc định nếu chưa cập nhật kịp
+            # Nhưng 90% sẽ là ảnh chỉ số chuẩn
+            return url, image_url, "OK"
         else:
-            return url, "Không lấy được chi tiết (Web đổi cấu trúc)."
+            return url, None, "⚠️ Web không trả về ảnh thống kê (Có thể do mạng)."
 
     except Exception as e:
-        return None, f"Lỗi code: {str(e)}"
+        return None, None, f"Lỗi Bot: {str(e)}"
 
 @bot.event
 async def on_ready():
@@ -55,31 +53,34 @@ async def on_ready():
 
 @bot.command()
 async def rank(ctx, *, full_name_tag):
+    # Xử lý input người dùng
     if '#' not in full_name_tag:
         await ctx.send("⚠️ Sai cú pháp! Nhập: `!rank Tên#Tag` (VD: `!rank Trông Anh Ngược#CiS`)")
         return
 
-    # Tách tên và tag
     parts = full_name_tag.split('#')
     tag = parts[-1].strip()
     name = "".join(parts[:-1]).strip()
     
-    await ctx.send(f"🔍 Đang check {name}#{tag} trên Dak.gg...")
+    msg = await ctx.send(f"🔍 Đang vào Tactics.tools chụp ảnh rank của **{name}#{tag}**...")
     
-    url, result = scrape_tft_stats(name, tag)
+    # Gọi hàm xử lý
+    profile_url, image_url, status = get_stat_card(name, tag)
     
-    if url and result:
-        # Tạo khung hiển thị đẹp (Embed)
+    if status == "OK":
+        # Tạo Embed chứa ảnh
         embed = discord.Embed(
-            title=f"Kết quả: {name}#{tag}",
-            url=url,
-            description=result, # Nội dung Rank, LP nằm ở đây
-            color=0x00ff00 # Màu xanh lá
+            title=f"Hồ sơ đấu thủ: {name}#{tag}",
+            url=profile_url,
+            color=0x2ecc71 # Màu xanh ngọc
         )
-        embed.set_footer(text="Dữ liệu từ Dak.gg")
-        await ctx.send(embed=embed)
+        # Gắn ảnh stat card vào (Đây là phần quan trọng nhất)
+        embed.set_image(url=image_url)
+        embed.set_footer(text="Dữ liệu hình ảnh từ Tactics.tools")
+        
+        await msg.edit(content="", embed=embed)
     else:
-        await ctx.send(f"❌ Lỗi: {result}")
+        await msg.edit(content=status)
 
 keep_alive()
 try:
