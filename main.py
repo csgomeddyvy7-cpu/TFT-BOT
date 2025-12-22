@@ -10,42 +10,42 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- HÀM LẤY ẢNH THỐNG KÊ TỪ TACTICS.TOOLS ---
-def get_stat_card(name, tag):
-    # 1. Xử lý tên tiếng Việt (Mã hóa URL)
-    # Ví dụ: "Trông Anh Ngược" -> "Trông%20Anh%20Ngược"
+def scrape_tactics_tools(name, tag):
+    # 1. Tạo URL Profile
     encoded_name = quote(name)
-    
-    # URL của Tactics.tools (Trang này hỗ trợ tiếng Việt tốt nhất)
-    url = f"https://tactics.tools/player/vn/{encoded_name}/{tag}"
+    profile_url = f"https://tactics.tools/player/vn/{encoded_name}/{tag}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(profile_url, headers=headers)
         
-        # Nếu không tìm thấy người chơi
         if response.status_code == 404:
-            return None, None, "❌ Không tìm thấy tên này. Bạn kiểm tra lại dấu cách hoặc Tag xem."
-
+            return None, None, None, "❌ Không tìm thấy tên người chơi này."
+            
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 2. MẸO: Lấy link ảnh từ thẻ Meta "og:image"
-        # Đây là tấm ảnh chứa toàn bộ thông tin Rank/Winrate mà web tự tạo ra
+        # 2. Lấy thông tin CHỮ (Rank, LP) từ thẻ Description
+        # Để phòng trường hợp ảnh không hiện thì vẫn có chữ để đọc
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        description_text = meta_desc['content'] if meta_desc else "Không lấy được thông tin chi tiết."
+        
+        # 3. Lấy thông tin ẢNH (Stat Card)
         meta_image = soup.find('meta', property='og:image')
+        image_url = None
         
         if meta_image:
-            image_url = meta_image['content']
-            # Tactics.tools đôi khi dùng ảnh mặc định nếu chưa cập nhật kịp
-            # Nhưng 90% sẽ là ảnh chỉ số chuẩn
-            return url, image_url, "OK"
-        else:
-            return url, None, "⚠️ Web không trả về ảnh thống kê (Có thể do mạng)."
+            raw_image_url = meta_image['content']
+            # QUAN TRỌNG: Sửa lỗi link ảnh chứa dấu cách khiến Discord không hiển thị
+            image_url = raw_image_url.replace(" ", "%20")
+            print(f"Link ảnh tìm được: {image_url}") # In ra console để kiểm tra
+        
+        return profile_url, description_text, image_url, "OK"
 
     except Exception as e:
-        return None, None, f"Lỗi Bot: {str(e)}"
+        return None, None, None, f"Lỗi code: {str(e)}"
 
 @bot.event
 async def on_ready():
@@ -53,31 +53,32 @@ async def on_ready():
 
 @bot.command()
 async def rank(ctx, *, full_name_tag):
-    # Xử lý input người dùng
     if '#' not in full_name_tag:
-        await ctx.send("⚠️ Sai cú pháp! Nhập: `!rank Tên#Tag` (VD: `!rank Trông Anh Ngược#CiS`)")
+        await ctx.send("⚠️ Sai cú pháp! Ví dụ: `!rank Zyud#6969`")
         return
 
     parts = full_name_tag.split('#')
     tag = parts[-1].strip()
     name = "".join(parts[:-1]).strip()
     
-    msg = await ctx.send(f"🔍 Đang vào Tactics.tools chụp ảnh rank của **{name}#{tag}**...")
+    msg = await ctx.send(f"🔍 Đang soi **{name}#{tag}**...")
     
-    # Gọi hàm xử lý
-    profile_url, image_url, status = get_stat_card(name, tag)
+    profile_url, desc_text, image_url, status = scrape_tactics_tools(name, tag)
     
     if status == "OK":
-        # Tạo Embed chứa ảnh
         embed = discord.Embed(
-            title=f"Hồ sơ đấu thủ: {name}#{tag}",
+            title=f"Hồ sơ: {name}#{tag}",
             url=profile_url,
-            color=0x2ecc71 # Màu xanh ngọc
+            description=f"📊 **Thông tin nhanh:**\n{desc_text}", # Hiển thị chữ ở đây
+            color=0x2ecc71
         )
-        # Gắn ảnh stat card vào (Đây là phần quan trọng nhất)
-        embed.set_image(url=image_url)
-        embed.set_footer(text="Dữ liệu hình ảnh từ Tactics.tools")
         
+        # Nếu có ảnh thì gắn vào, không thì thôi
+        if image_url:
+            embed.set_image(url=image_url)
+        else:
+            embed.set_footer(text="Không tìm thấy ảnh thống kê, nhưng link trên vẫn hoạt động.")
+            
         await msg.edit(content="", embed=embed)
     else:
         await msg.edit(content=status)
