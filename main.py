@@ -10,8 +10,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- DANH BẠ NGƯỜI QUEN (Sửa tên ở đây) ---
-# Lưu ý: Viết chữ thường hết cho phần tên biệt danh để bot dễ tìm
+# --- DANH BẠ (Viết thường hết ở phần tên biệt danh nhé) ---
 FRIEND_LIST = {
     "tanh": "Zyud#6969",
     "béo": "Bob#Dogak",
@@ -28,7 +27,6 @@ def get_tft_stats(name, tag):
     url = f"https://tactics.tools/player/vn/{encoded_name}/{tag}"
     
     try:
-        # Giả lập Chrome 110 để vượt Cloudflare
         response = cffi_requests.get(url, impersonate="chrome110", timeout=10)
         
         if response.status_code == 404:
@@ -57,53 +55,50 @@ def get_tft_stats(name, tag):
 async def on_ready():
     print(f'Bot {bot.user} đã online!')
 
-# --- LỆNH XEM DANH SÁCH ---
 @bot.command()
 async def list(ctx):
-    """Hiện danh sách biệt danh đã lưu"""
+    """Hiện danh sách biệt danh"""
     desc = ""
     for nick, real_name in FRIEND_LIST.items():
-        # Viết hoa chữ cái đầu cho đẹp
         desc += f"🔹 **{nick.title()}** ➡️ `{real_name}`\n"
     
     embed = discord.Embed(
         title="📜 Danh sách các con vợ",
         description=desc,
-        color=0xf1c40f # Màu vàng
+        color=0xf1c40f 
     )
-    embed.set_footer(text="Gõ !rank [tên] để check nhanh")
+    embed.set_footer(text="Gõ !rank [tên] để check")
     await ctx.send(embed=embed)
 
-# --- LỆNH RANK THÔNG MINH ---
 @bot.command()
 async def rank(ctx, *, input_name):
-    """
-    Check rank theo biệt danh hoặc tên đầy đủ.
-    VD: !rank Tanh  HOẶC  !rank Zyud#6969
-    """
-    # 1. Chuẩn hóa đầu vào (biến thành chữ thường để so sánh)
+    """Check rank theo biệt danh hoặc tên đầy đủ."""
+    
+    # 1. Chuẩn hóa tên nhập vào (biến thành chữ thường)
     key_lookup = input_name.lower().strip()
+    real_id = None
 
-    # 2. Kiểm tra xem có trong danh bạ không
+    # 2. LOGIC ĐÃ SỬA: Ưu tiên tìm trong danh bạ trước!
     if key_lookup in FRIEND_LIST:
         real_id = FRIEND_LIST[key_lookup]
-        await ctx.send(f"🎯 Phát hiện **{input_name}** là **{real_id}**. Đang soi...")
+        await ctx.send(f"🎯 Phát hiện **{input_name.title()}** là **{real_id}**. Đang soi...")
+    
+    # 3. Nếu không có trong danh bạ, mới kiểm tra xem có phải nhập tay (có dấu #) không
+    elif '#' in input_name:
+        real_id = input_name
+        await ctx.send(f"🔍 Đang soi **{real_id}**...")
+    
+    # 4. Nếu cả 2 đều sai -> Báo lỗi và DỪNG LẠI (return)
     else:
-        # Nếu không có trong danh bạ, kiểm tra xem có phải gõ tay Tên#Tag không
-        if '#' in input_name:
-            real_id = input_name
-            await ctx.send(f"🔍 Đang soi **{real_id}**...")
-        else:
-            await ctx.send(f"❌ Không tìm thấy biệt danh **{input_name}** trong lệnh `!list`.\nVui lòng nhập đúng Tên#Tag (VD: `!rank Zyud#6969`)")
-            return
+        await ctx.send(f"❌ Không tìm thấy biệt danh **{input_name}** và cũng không đúng cú pháp Tên#Tag.")
+        return 
 
-    # 3. Tách Tên và Tag để xử lý
+    # --- Phần xử lý lấy dữ liệu (Chỉ chạy khi đã có real_id) ---
     try:
         parts = real_id.split('#')
         tag = parts[-1].strip()
         name = "".join(parts[:-1]).strip()
         
-        # 4. Gọi hàm lấy dữ liệu
         data, error = get_tft_stats(name, tag)
         
         if data:
